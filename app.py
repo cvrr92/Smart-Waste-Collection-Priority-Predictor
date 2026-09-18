@@ -11,6 +11,7 @@ Enterprise-grade Interactive Command Center wired to all repository files:
 """
 
 import os
+import io
 import time
 import json
 import warnings
@@ -202,19 +203,55 @@ html, body, [class*="css"] {
 # -----------------------------------------------------------------------------
 # CONSTANTS & PALETTES
 # -----------------------------------------------------------------------------
+# CONSTANTS & PALETTES
+# -----------------------------------------------------------------------------
 PRIORITY_COLORS = {
     "URGENT": "#ef4444",
     "SOON": "#f59e0b",
     "LOW": "#10b981"
 }
 
-ZONE_COORDINATES = {
-    "ZONE_A": {"lat_center": 40.7580, "lon_center": -73.9855, "name": "Downtown / Times Sq"},
-    "ZONE_B": {"lat_center": 40.7505, "lon_center": -73.9934, "name": "Commercial District"},
-    "ZONE_C": {"lat_center": 40.7306, "lon_center": -73.9972, "name": "University / Arts"},
-    "ZONE_D": {"lat_center": 40.7061, "lon_center": -74.0086, "name": "Financial / Port"},
-    "ZONE_E": {"lat_center": 40.7829, "lon_center": -73.9654, "name": "Uptown / Residential"},
+# 4 Real Mathura Places mapped to Zones (with Zone E for 5-zone model compatibility)
+ZONE_PLACE_NAMES = {
+    "ZONE_A": "Krishna Janmabhoomi",
+    "ZONE_B": "Vishram Ghat",
+    "ZONE_C": "GLA University Hub",
+    "ZONE_D": "Mathura Junction",
+    "ZONE_E": "Govardhan Chauraha",
 }
+
+ZONE_FULL_LABELS = {
+    "ZONE_A": "Krishna Janmabhoomi (Mathura Center)",
+    "ZONE_B": "Vishram Ghat (Yamuna Riverfront)",
+    "ZONE_C": "GLA University Hub (NH-19)",
+    "ZONE_D": "Mathura Junction (Railway Station)",
+    "ZONE_E": "Govardhan Chauraha (Highway)",
+}
+
+ZONE_COORDINATES = {
+    "ZONE_A": {"lat_center": 27.5050, "lon_center": 77.6700, "name": "Krishna Janmabhoomi", "icon": "🏛️"},
+    "ZONE_B": {"lat_center": 27.5042, "lon_center": 77.6875, "name": "Vishram Ghat", "icon": "🌊"},
+    "ZONE_C": {"lat_center": 27.6057, "lon_center": 77.5933, "name": "GLA University Hub", "icon": "🎓"},
+    "ZONE_D": {"lat_center": 27.4789, "lon_center": 77.6750, "name": "Mathura Junction", "icon": "🚆"},
+    "ZONE_E": {"lat_center": 27.4980, "lon_center": 77.6400, "name": "Govardhan Chauraha", "icon": "🛣️"},
+}
+
+def map_to_zone_code(val, default="ZONE_A"):
+    """Maps human-readable Mathura location names or zone strings into model feature zone codes."""
+    if val is None or pd.isna(val):
+        return default
+    s = str(val).strip().lower()
+    if any(k in s for k in ["janmabhoomi", "krishna", "deeg", "zone_a", "zone a"]) or s == "a":
+        return "ZONE_A"
+    elif any(k in s for k in ["vishram", "ghat", "yamuna", "river", "zone_b", "zone b"]) or s == "b":
+        return "ZONE_B"
+    elif any(k in s for k in ["gla", "university", "campus", "nh-19", "nh 19", "zone_c", "zone c"]) or s == "c":
+        return "ZONE_C"
+    elif any(k in s for k in ["junction", "cantt", "railway", "station", "train", "zone_d", "zone d"]) or s == "d":
+        return "ZONE_D"
+    elif any(k in s for k in ["govardhan", "chauraha", "highway", "bypass", "zone_e", "zone e"]) or s == "e":
+        return "ZONE_E"
+    return default
 
 def apply_plot_style(fig, **kwargs):
     base_layout = dict(
@@ -252,6 +289,12 @@ if "custom_soon_fill" not in st.session_state:
 
 if "custom_soon_risk" not in st.session_state:
     st.session_state.custom_soon_risk = 0.40
+
+if "uploaded_dataset_bytes" not in st.session_state:
+    st.session_state.uploaded_dataset_bytes = None
+
+if "uploaded_dataset_filename" not in st.session_state:
+    st.session_state.uploaded_dataset_filename = None
 
 # -----------------------------------------------------------------------------
 # DATA / MODEL LOADING (CACHED)
@@ -349,7 +392,11 @@ def prepare_features_for_inference(df_input):
         df["day_of_week"] = pd.to_numeric(df["day_of_week"], errors="coerce").fillna(2)
             
     # 4. Fill levels & lags
-    fill_col = "fill_level" if "fill_level" in df.columns else ("current_fill_level" if "current_fill_level" in df.columns else None)
+    fill_col = None
+    for c in ["fill_level", "current_fill_level", "fill", "current_fill", "fill_pct"]:
+        if c in df.columns:
+            fill_col = c
+            break
     base_fill = pd.to_numeric(df[fill_col], errors="coerce").fillna(50.0) if fill_col is not None else pd.Series(50.0, index=df.index)
     
     if "fill_lag_1" not in df.columns:
@@ -407,19 +454,22 @@ def prepare_features_for_inference(df_input):
     else:
         df["nearby_activity"] = pd.to_numeric(df["nearby_activity"], errors="coerce").fillna(50.0)
         
-    # 7. Zone one-hot encoding
+    # 7. Mathura Location / Zone normalisation & one-hot encoding
+    zone_col = None
+    for c in ["location_zone", "zone", "place", "location", "landmark", "area", "mathura_place"]:
+        if c in df.columns:
+            zone_col = c
+            break
+            
+    if zone_col is not None:
+        df["location_zone"] = df[zone_col].apply(lambda v: map_to_zone_code(v))
+    else:
+        df["location_zone"] = [["ZONE_A", "ZONE_B", "ZONE_C", "ZONE_D"][i % 4] for i in range(len(df))]
+        
     zone_names = ["ZONE_A", "ZONE_B", "ZONE_C", "ZONE_D", "ZONE_E"]
     for z in zone_names:
         col = f"zone_{z}"
-        if col not in df.columns:
-            if "location_zone" in df.columns:
-                df[col] = (df["location_zone"].astype(str).str.upper() == z).astype(int)
-            elif "zone" in df.columns:
-                df[col] = (df["zone"].astype(str).str.upper() == z).astype(int)
-            else:
-                df[col] = 1 if z == "ZONE_A" else 0
-        else:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+        df[col] = (df["location_zone"] == z).astype(int)
                 
     feature_cols = [
         'hours_since_collection', 'hour_of_day', 'day_of_week',
@@ -460,35 +510,119 @@ def get_live_rankings(_df_feat, _reg, _clf, urgent_fill=90, urgent_risk=0.70, so
 
     return out
 
-# Synthesize deterministic geospatial coordinates per bin for the map/route visualizer
-def assign_bin_locations(bin_list):
+# Synthesize deterministic geospatial coordinates per bin around Mathura landmarks
+def assign_bin_locations(bin_list, zone_dict=None):
     np.random.seed(42)
     coords = {}
     for b in bin_list:
-        # derive zone from index or name
-        # Hash bin name to get reproducible jitter
         h = abs(hash(str(b))) % 1000
-        z_idx = ["ZONE_A", "ZONE_B", "ZONE_C", "ZONE_D", "ZONE_E"][h % 5]
+        z_idx = zone_dict.get(b, ["ZONE_A", "ZONE_B", "ZONE_C", "ZONE_D", "ZONE_E"][h % 5]) if zone_dict else ["ZONE_A", "ZONE_B", "ZONE_C", "ZONE_D", "ZONE_E"][h % 5]
+        if z_idx not in ZONE_COORDINATES:
+            z_idx = map_to_zone_code(z_idx)
+            if z_idx not in ZONE_COORDINATES:
+                z_idx = ["ZONE_A", "ZONE_B", "ZONE_C", "ZONE_D", "ZONE_E"][h % 5]
         z_info = ZONE_COORDINATES[z_idx]
-        lat = z_info["lat_center"] + ((h % 50) - 25) * 0.0006
-        lon = z_info["lon_center"] + (((h // 50) % 50) - 25) * 0.0006
-        coords[b] = (lat, lon)
+        # Realistic street-level jitter around Mathura landmarks (~150m to 500m)
+        lat = z_info["lat_center"] + ((h % 40) - 20) * 0.00035
+        lon = z_info["lon_center"] + (((h // 40) % 40) - 20) * 0.00035
+        coords[b] = (lat, lon, z_info["name"])
     return coords
 
 # -----------------------------------------------------------------------------
-# LOAD ASSETS
+# LOAD ASSETS & COMPUTE ACTIVE RANKINGS (REACTIVE DATA PIPELINE)
 # -----------------------------------------------------------------------------
-raw_df, df_feat = load_dataset()
 reg_model, clf_model = load_models()
 
-# Apply any current session state collection overrides to simulated state
-raw_rankings = get_live_rankings(
-    df_feat, reg_model, clf_model,
-    st.session_state.custom_urgent_fill,
-    st.session_state.custom_urgent_risk,
-    st.session_state.custom_soon_fill,
-    st.session_state.custom_soon_risk
-)
+# Synchronize uploads from both sidebar and Tab 7
+incoming_upload = st.session_state.get("sidebar_csv_uploader") or st.session_state.get("tab7_csv_uploader")
+if incoming_upload is not None:
+    try:
+        incoming_upload.seek(0)
+        f_bytes = incoming_upload.getvalue()
+        if f_bytes != st.session_state.get("uploaded_dataset_bytes"):
+            st.session_state.uploaded_dataset_bytes = f_bytes
+            st.session_state.uploaded_dataset_filename = incoming_upload.name
+            st.session_state.collected_bins = set()
+    except Exception:
+        pass
+
+if st.session_state.get("uploaded_dataset_bytes") is not None:
+    try:
+        raw_df = pd.read_csv(io.BytesIO(st.session_state.uploaded_dataset_bytes))
+        
+        if "bin_id" not in raw_df.columns:
+            raw_df["bin_id"] = [f"BIN_{i+1:03d}" for i in range(len(raw_df))]
+            
+        processed_df, X_features = prepare_features_for_inference(raw_df)
+        
+        pred_next_fill = reg_model.predict(X_features)
+        pred_overflow_risk = clf_model.predict_proba(X_features)[:, 1]
+        
+        custom_priority = raw_df.copy()
+        custom_priority["predicted_next_fill"] = np.round(pred_next_fill, 1)
+        custom_priority["predicted_overflow_risk"] = np.round(pred_overflow_risk, 3)
+        custom_priority["priority"] = custom_priority.apply(
+            lambda r: calculate_priority(
+                r["predicted_next_fill"], r["predicted_overflow_risk"],
+                st.session_state.custom_urgent_fill,
+                st.session_state.custom_urgent_risk,
+                st.session_state.custom_soon_fill,
+                st.session_state.custom_soon_risk
+            ), axis=1
+        )
+        
+        custom_priority["location_zone"] = processed_df["location_zone"]
+        
+        fill_col = None
+        for c in ["fill_level", "current_fill_level", "fill", "current_fill"]:
+            if c in custom_priority.columns:
+                fill_col = c
+                break
+        if fill_col and fill_col != "current_fill_level":
+            custom_priority["current_fill_level"] = custom_priority[fill_col]
+        elif "current_fill_level" not in custom_priority.columns:
+            custom_priority["current_fill_level"] = 50.0
+            
+        if "hours_since_collection" not in custom_priority.columns:
+            custom_priority["hours_since_collection"] = processed_df.get("hours_since_collection", 24.0)
+            
+        if "last_reading_time" not in custom_priority.columns:
+            if "timestamp" in custom_priority.columns:
+                custom_priority["last_reading_time"] = custom_priority["timestamp"]
+            else:
+                custom_priority["last_reading_time"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+        for opt_col in ["nearby_activity", "weather_flag", "event_flag"]:
+            if opt_col not in custom_priority.columns:
+                custom_priority[opt_col] = processed_df.get(opt_col, 0)
+                
+        raw_rankings = custom_priority
+        df_feat = processed_df
+        data_source_label = f"Uploaded File: {st.session_state.get('uploaded_dataset_filename', 'Custom CSV')} ({len(raw_rankings)} Bins Loaded)"
+        is_custom_data = True
+    except Exception as e:
+        st.sidebar.error(f"Error reading uploaded CSV: {e}")
+        raw_df, df_feat = load_dataset()
+        raw_rankings = get_live_rankings(
+            df_feat, reg_model, clf_model,
+            st.session_state.custom_urgent_fill,
+            st.session_state.custom_urgent_risk,
+            st.session_state.custom_soon_fill,
+            st.session_state.custom_soon_risk
+        )
+        data_source_label = "Default Mathura Fleet (100 Bins across 4 Mathura Places)"
+        is_custom_data = False
+else:
+    raw_df, df_feat = load_dataset()
+    raw_rankings = get_live_rankings(
+        df_feat, reg_model, clf_model,
+        st.session_state.custom_urgent_fill,
+        st.session_state.custom_urgent_risk,
+        st.session_state.custom_soon_fill,
+        st.session_state.custom_soon_risk
+    )
+    data_source_label = "Default Mathura Fleet (100 Bins across 4 Mathura Places)"
+    is_custom_data = False
 
 # Mutate copy with session collections
 priority_df = raw_rankings.copy()
@@ -510,19 +644,57 @@ priority_df = priority_df.sort_values(
     ascending=[True, False, False]
 ).drop(columns=["sort_key"]).reset_index(drop=True)
 
-bin_coords = assign_bin_locations(priority_df["bin_id"].tolist())
+zone_dict = dict(zip(priority_df["bin_id"], priority_df["location_zone"]))
+bin_coords = assign_bin_locations(priority_df["bin_id"].tolist(), zone_dict)
 priority_df["latitude"] = priority_df["bin_id"].map(lambda x: bin_coords[x][0])
 priority_df["longitude"] = priority_df["bin_id"].map(lambda x: bin_coords[x][1])
+priority_df["landmark"] = priority_df["bin_id"].map(lambda x: bin_coords[x][2])
+priority_df["mathura_place"] = priority_df["location_zone"].map(ZONE_PLACE_NAMES).fillna("Mathura Central")
+priority_df["mathura_place_full"] = priority_df["location_zone"].map(ZONE_FULL_LABELS).fillna("Mathura Central")
 
 # -----------------------------------------------------------------------------
 # SIDEBAR FILTERS & SETTINGS
 # -----------------------------------------------------------------------------
 with st.sidebar:
+    st.markdown("### 📂 Fleet Telemetry Source")
+    sidebar_upload = st.file_uploader(
+        "Upload Custom CSV (Refreshes Entire App)",
+        type=["csv"],
+        key="sidebar_csv_uploader",
+        help="Upload any CSV file to instantly refresh all KPIs, the Mathura map, and priority lists!"
+    )
+    if sidebar_upload is not None:
+        if sidebar_upload.getvalue() != st.session_state.get("uploaded_dataset_bytes"):
+            st.session_state.uploaded_dataset_bytes = sidebar_upload.getvalue()
+            st.session_state.uploaded_dataset_filename = sidebar_upload.name
+            st.session_state.collected_bins = set()
+            st.rerun()
+
+    if st.session_state.get("uploaded_dataset_bytes") is not None:
+        st.markdown(f"""
+        <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; font-size: 0.8rem; color: #a7f3d0;">
+            ⚡ <b>Active Dataset</b>: {st.session_state.get('uploaded_dataset_filename', 'Custom CSV')}<br>
+            <span style="font-size: 0.72rem; color: #6ee7b7;">All KPIs & Mathura Map live-updated</span>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("🔄 Revert to Default Mathura Fleet", key="sidebar_revert_btn", use_container_width=True):
+            st.session_state.uploaded_dataset_bytes = None
+            st.session_state.uploaded_dataset_filename = None
+            st.session_state.collected_bins = set()
+            st.rerun()
+
+    st.markdown("---")
     st.markdown("### 🎛️ Command Controls")
     
-    st.markdown("**Zone Filter**")
+    st.markdown("**📍 Mathura Location / Area Filter**")
     all_zones = sorted(priority_df["location_zone"].unique())
-    selected_zones = st.multiselect("Select Zones", all_zones, default=all_zones, label_visibility="collapsed")
+    selected_zones = st.multiselect(
+        "Select Locations",
+        all_zones,
+        default=all_zones,
+        format_func=lambda z: ZONE_FULL_LABELS.get(z, ZONE_PLACE_NAMES.get(z, z)),
+        label_visibility="collapsed"
+    )
     
     st.markdown("**Priority Filter**")
     all_priorities = ["URGENT", "SOON", "LOW"]
@@ -569,7 +741,7 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.caption("🤖 **EcoPriority AI v2.4** • PS 17 Hackathon\nDual Random Forest Architecture")
+    st.caption("🤖 **EcoPriority AI v2.5** • PS 17 Hackathon\nDual Random Forest Architecture")
 
 # Apply filters
 filtered_df = priority_df[
@@ -593,29 +765,31 @@ high_risk_count = (priority_df["predicted_overflow_risk"] >= 0.70).sum()
 st.markdown(f"""
 <div class="hero-header">
     <div class="hero-title">
-        <span>♻️ EcoPriority AI</span>
+        <span>♻️ EcoPriority AI — Mathura Command Hub</span>
         <span class="badge badge-{'urgent' if urgent_count > 0 else 'low'}">
             <span class="pulse-dot" style="background-color: {'#ef4444' if urgent_count > 0 else '#10b981'};"></span>
-            {urgent_count} Critical Action Items
+            {urgent_count} Critical Urgent Bins
         </span>
     </div>
     <div class="hero-subtitle">
-        Intelligent Waste Collection Priority & Overflow Prevention Command Center.
-        Powered by dual scikit-learn models predicting bin capacity and overflow probability across 5 city zones.
+        Intelligent Waste Collection Priority & Overflow Prevention Command Center for <b>Mathura, UP</b>.<br>
+        <span style="color: #38bdf8; font-size: 0.85rem;">📡 Active Dataset: <b>{data_source_label}</b></span>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# TOP STATS / KPIS
+# TOP STATS / KPIS (REFLECTS ACTIVE / UPLOADED DATASET)
 # -----------------------------------------------------------------------------
 k1, k2, k3, k4, k5 = st.columns(5)
+total_active_bins = len(priority_df) if len(priority_df) > 0 else 1
+
 with k1:
     st.markdown(f"""
     <div class="kpi-card kpi-urgent">
         <div class="kpi-title">🔴 Urgent Bins</div>
         <div class="kpi-value" style="color: #ef4444;">{urgent_count}</div>
-        <div class="kpi-sub">Needs immediate pickup</div>
+        <div class="kpi-sub">{urgent_count/total_active_bins*100:.1f}% of active fleet • Immediate pickup</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -624,7 +798,7 @@ with k2:
     <div class="kpi-card kpi-soon">
         <div class="kpi-title">🟠 Soon Priority</div>
         <div class="kpi-value" style="color: #f59e0b;">{soon_count}</div>
-        <div class="kpi-sub">Next scheduled route</div>
+        <div class="kpi-sub">{soon_count/total_active_bins*100:.1f}% of active fleet • Next route</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -633,7 +807,7 @@ with k3:
     <div class="kpi-card kpi-low">
         <div class="kpi-title">🟢 Low / Safe</div>
         <div class="kpi-value" style="color: #10b981;">{low_count}</div>
-        <div class="kpi-sub">Adequate capacity</div>
+        <div class="kpi-sub">{low_count/total_active_bins*100:.1f}% of active fleet • Adequate capacity</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -642,7 +816,7 @@ with k4:
     <div class="kpi-card kpi-info">
         <div class="kpi-title">📈 Fleet Avg Fill</div>
         <div class="kpi-value" style="color: #38bdf8;">{avg_fill:.1f}%</div>
-        <div class="kpi-sub">Across 100 monitored bins</div>
+        <div class="kpi-sub">Across {total_active_bins} active bins</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -662,7 +836,7 @@ st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
 # -----------------------------------------------------------------------------
 tabs = st.tabs([
     "🚨 Dispatch & Priority Queue",
-    "🗺️ Geospatial Route Planner",
+    "🗺️ Geospatial Route & Urgency Grid",
     "🔍 Bin Telemetry Deep Dive",
     "🧪 What-If AI Simulation",
     "📈 Model Performance Lab",
@@ -688,13 +862,13 @@ with tabs[0]:
         display_table["hours_since_collection"] = display_table["hours_since_collection"].round(1).astype(str) + "h"
 
         table_cols = [
-            "bin_id", "location_zone", "current_fill_level",
+            "bin_id", "mathura_place", "current_fill_level",
             "predicted_next_fill", "predicted_overflow_risk", "priority", "hours_since_collection"
         ]
         
         display_table = display_table[table_cols].rename(columns={
             "bin_id": "Bin ID",
-            "location_zone": "Zone",
+            "mathura_place": "Mathura Location",
             "current_fill_level": "Current Fill",
             "predicted_next_fill": "Predicted Next Fill",
             "predicted_overflow_risk": "Overflow Risk",
@@ -730,11 +904,12 @@ with tabs[0]:
                 st.rerun()
         with action_col3:
             st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-            if st.button("⚡ Dispatch Entire Zone", use_container_width=True):
-                zone_to_empty = filtered_df.loc[filtered_df["bin_id"] == target_bin_to_empty, "location_zone"].values[0]
-                bins_in_zone = priority_df[priority_df["location_zone"] == zone_to_empty]["bin_id"].tolist()
-                st.session_state.collected_bins.update(bins_in_zone)
-                st.toast(f"✅ Dispatched fleet to all bins in {zone_to_empty}!", icon="🚚")
+            if st.button("⚡ Dispatch Entire Location", use_container_width=True):
+                loc_to_empty = filtered_df.loc[filtered_df["bin_id"] == target_bin_to_empty, "location_zone"].values[0]
+                loc_name = ZONE_PLACE_NAMES.get(loc_to_empty, loc_to_empty)
+                bins_in_loc = priority_df[priority_df["location_zone"] == loc_to_empty]["bin_id"].tolist()
+                st.session_state.collected_bins.update(bins_in_loc)
+                st.toast(f"✅ Dispatched fleet to all bins in {loc_name}!", icon="🚚")
                 st.rerun()
 
     with col_right:
@@ -756,23 +931,24 @@ with tabs[0]:
         )
         st.plotly_chart(fig_donut, use_container_width=True)
 
-        # Average Fill Level by Zone Bar Chart
-        st.markdown("##### Zone Average Fill & Risk")
+        # Average Fill Level by Mathura Location Bar Chart
+        st.markdown("##### Mathura Locations Avg Fill & Risk")
         zone_summary = priority_df.groupby("location_zone").agg({
             "current_fill_level": "mean",
             "predicted_overflow_risk": lambda x: (x.mean() * 100)
         }).round(1).reset_index()
+        zone_summary["location_name"] = zone_summary["location_zone"].map(ZONE_PLACE_NAMES).fillna(zone_summary["location_zone"])
 
         fig_zone = go.Figure()
         fig_zone.add_trace(go.Bar(
             name="Avg Current Fill (%)",
-            x=zone_summary["location_zone"],
+            x=zone_summary["location_name"],
             y=zone_summary["current_fill_level"],
             marker_color="#38bdf8"
         ))
         fig_zone.add_trace(go.Bar(
             name="Avg Overflow Risk (%)",
-            x=zone_summary["location_zone"],
+            x=zone_summary["location_name"],
             y=zone_summary["predicted_overflow_risk"],
             marker_color="#ef4444"
         ))
@@ -786,72 +962,150 @@ with tabs[0]:
         st.plotly_chart(fig_zone, use_container_width=True)
 
 # =============================================================================
-# TAB 2: GEOSPATIAL ROUTE PLANNER
+# TAB 2: GEOSPATIAL ROUTE PLANNER & URGENCY GRID (MATHURA STREET MAP)
 # =============================================================================
 with tabs[1]:
-    st.markdown("### 🗺️ Geospatial Fleet Route & Urgency Grid")
-    st.caption("Interactive spatial visualization of monitored bins across Zone A-E with optimized truck pickup sequence.")
+    st.markdown("### 🗺️ City of Mathura — Fleet Route & Urgency Grid")
+    st.caption("Real-world street map of Mathura across 4 key locations (**Krishna Janmabhoomi**, **Vishram Ghat**, **GLA University Hub**, **Mathura Junction**) with prioritized dispatch route.")
 
+    # 1. Mathura Location Urgency Grid
+    st.markdown("##### 📍 Mathura Locations Urgency Grid")
+    active_zones = sorted(priority_df["location_zone"].unique())
+    grid_cols = st.columns(min(len(active_zones), 5))
+    for i, z_code in enumerate(active_zones):
+        z_bins = priority_df[priority_df["location_zone"] == z_code]
+        z_name = ZONE_PLACE_NAMES.get(z_code, z_code)
+        z_icon = ZONE_COORDINATES.get(z_code, {}).get("icon", "📍")
+        z_urgent = (z_bins["priority"] == "URGENT").sum()
+        z_soon = (z_bins["priority"] == "SOON").sum()
+        z_low = (z_bins["priority"] == "LOW").sum()
+        z_avg = z_bins["current_fill_level"].mean() if len(z_bins) > 0 else 0.0
+        
+        status_color = "#ef4444" if z_urgent > 0 else ("#f59e0b" if z_soon > 0 else "#10b981")
+        status_text = f"🔴 {z_urgent} Urgent" if z_urgent > 0 else (f"🟠 {z_soon} Soon" if z_soon > 0 else "🟢 Safe")
+        
+        with grid_cols[i % len(grid_cols)]:
+            st.markdown(f"""
+            <div class="kpi-card" style="border-top: 3px solid {status_color}; padding: 12px 14px; margin-bottom: 14px;">
+                <div style="font-weight: 700; font-size: 0.95rem; color: #f8fafc; margin-bottom: 4px;">
+                    {z_icon} {z_name}
+                </div>
+                <div style="font-size: 0.82rem; color: {status_color}; font-weight: 700; margin-bottom: 8px;">
+                    {status_text}
+                </div>
+                <div style="font-size: 0.78rem; color: #94a3b8; line-height: 1.6;">
+                    • Total Bins: <b style="color: #f1f5f9;">{len(z_bins)}</b><br>
+                    • Avg Fill: <b style="color: #38bdf8;">{z_avg:.1f}%</b><br>
+                    • Safe: <b style="color: #10b981;">{z_low}</b> | Soon: <b style="color: #f59e0b;">{z_soon}</b>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # 2. Interactive Mathura Map & Suggested Route
     map_col1, map_col2 = st.columns([2.1, 1.0])
 
     with map_col1:
-        # Spatial scatter plot with route connection
-        fig_map = px.scatter(
+        # Layer selector: OpenStreetMap or Carto-Darkmatter
+        m_c1, m_c2 = st.columns([1.5, 2])
+        with m_c1:
+            map_style_choice = st.radio(
+                "Map Layer Style:",
+                ["OpenStreetMap (Real Street View)", "Carto-Darkmatter (Cyber Dark)"],
+                horizontal=True,
+                label_visibility="collapsed"
+            )
+        selected_style = "open-street-map" if "OpenStreetMap" in map_style_choice else "carto-darkmatter"
+        
+        urgent_bins = filtered_df[filtered_df["priority"] == "URGENT"].sort_values(
+            by=["location_zone", "predicted_overflow_risk"], ascending=[True, False]
+        )
+        
+        center_dict = dict(lat=27.5350, lon=77.6450)
+        hover_cfg = {
+            "mathura_place": True,
+            "current_fill_level": ":.1f",
+            "predicted_next_fill": ":.1f",
+            "predicted_overflow_risk": ":.2f",
+            "latitude": False,
+            "longitude": False
+        }
+        
+        fig_map = px.scatter_map(
             filtered_df,
-            x="longitude",
-            y="latitude",
+            lat="latitude",
+            lon="longitude",
             color="priority",
             color_discrete_map=PRIORITY_COLORS,
             size="current_fill_level",
             size_max=18,
             hover_name="bin_id",
-            hover_data={
-                "location_zone": True,
-                "current_fill_level": ":.1f",
-                "predicted_next_fill": ":.1f",
-                "predicted_overflow_risk": ":.2f",
-                "latitude": False,
-                "longitude": False
-            },
-            title="Citywide Bin Sensor Network & Urgency Clusters"
+            hover_data=hover_cfg,
+            zoom=11.2,
+            center=center_dict,
+            map_style=selected_style,
+            title="City of Mathura — Live Smart Waste Telemetry Network"
         )
-
-        # Connect urgent bins with an optimal route sequence line
-        urgent_bins = filtered_df[filtered_df["priority"] == "URGENT"].sort_values(
-            by=["location_zone", "predicted_overflow_risk"], ascending=[True, False]
-        )
+        
+        # 4 Landmark Hub Star Pins with labels
+        landmarks_df = pd.DataFrame([
+            {"name": "🏛️ Krishna Janmabhoomi", "lat": 27.5050, "lon": 77.6700},
+            {"name": "🌊 Vishram Ghat", "lat": 27.5042, "lon": 77.6875},
+            {"name": "🎓 GLA University Hub", "lat": 27.6057, "lon": 77.5933},
+            {"name": "🚆 Mathura Junction", "lat": 27.4789, "lon": 77.6750},
+        ])
+        fig_map.add_trace(go.Scattermap(
+            lat=landmarks_df["lat"],
+            lon=landmarks_df["lon"],
+            mode="markers+text",
+            text=landmarks_df["name"],
+            textposition="top center",
+            textfont=dict(size=11, color="#f8fafc"),
+            marker=dict(size=13, color="#38bdf8", symbol="star"),
+            name="Mathura Landmark Hubs"
+        ))
+        
+        # Urgent dispatch route line
         if len(urgent_bins) > 1:
-            fig_map.add_trace(go.Scatter(
-                x=urgent_bins["longitude"],
-                y=urgent_bins["latitude"],
+            fig_map.add_trace(go.Scattermap(
+                lat=urgent_bins["latitude"],
+                lon=urgent_bins["longitude"],
                 mode="lines+markers",
-                line=dict(color="#ef4444", width=2.5, dash="dot"),
-                name="Optimized Urgent Route",
+                line=dict(color="#ef4444", width=3.5),
+                marker=dict(size=7, color="#ef4444"),
+                name="Urgent Mathura Dispatch Route",
                 hoverinfo="skip"
             ))
-
-        apply_plot_style(
-            fig_map,
-            height=540,
-            xaxis_title="City Longitude Grid",
-            yaxis_title="City Latitude Grid"
+                
+        fig_map.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(15, 23, 42, 0.4)",
+            font=dict(family="Plus Jakarta Sans, sans-serif", color="#94a3b8", size=11),
+            margin=dict(t=35, b=15, l=10, r=10),
+            height=560,
+            legend=dict(
+                bgcolor="rgba(15, 23, 42, 0.75)",
+                bordercolor="rgba(255,255,255,0.08)",
+                borderwidth=1,
+                font=dict(color="#cbd5e1")
+            )
         )
         st.plotly_chart(fig_map, use_container_width=True)
 
     with map_col2:
-        st.markdown("##### 🚚 Suggested Collection Sequence")
-        st.caption("Heuristic order: Urgent bins sorted by highest overflow probability.")
+        st.markdown("##### 🚚 Suggested Mathura Route Sequence")
+        st.caption("Urgent bins ordered by highest overflow probability:")
         
         urgent_queue = priority_df[priority_df["priority"] == "URGENT"].head(8)
         if urgent_queue.empty:
             st.success("🎉 No urgent bins at this moment! Fleet can operate on standard schedule.")
         else:
             for idx, r in urgent_queue.reset_index().iterrows():
+                loc_badge = r.get("mathura_place", r["location_zone"])
                 st.markdown(f"""
                 <div style="background: rgba(30, 41, 59, 0.6); border-left: 3px solid #ef4444; border-radius: 8px; padding: 10px 14px; margin-bottom: 8px;">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <span style="font-weight: 700; color: #f8fafc;">#{idx+1} {r['bin_id']}</span>
-                        <span class="badge badge-urgent">{r['location_zone']}</span>
+                        <span class="badge badge-urgent">{loc_badge}</span>
                     </div>
                     <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 4px;">
                         Fill: <b style="color: #fca5a5;">{r['current_fill_level']:.1f}%</b> → Pred: <b>{r['predicted_next_fill']:.1f}%</b> | Risk: <b>{r['predicted_overflow_risk']*100:.1f}%</b>
@@ -871,11 +1125,12 @@ with tabs[2]:
     
     inspect_col1, inspect_col2 = st.columns([1, 2.5])
     with inspect_col1:
-        all_bins_sorted = sorted(raw_df["bin_id"].unique())
+        all_bins_sorted = sorted(priority_df["bin_id"].unique())
         selected_bin = st.selectbox("Select Bin to Inspect:", all_bins_sorted, index=0)
         
         bin_row = priority_df[priority_df["bin_id"] == selected_bin].iloc[0]
         bin_p = bin_row["priority"]
+        loc_name = bin_row.get("mathura_place", bin_row.get("landmark", bin_row["location_zone"]))
         
         st.markdown(f"""
         <div class="kpi-card kpi-{'urgent' if bin_p=='URGENT' else ('soon' if bin_p=='SOON' else 'low')}" style="margin-top: 12px;">
@@ -883,7 +1138,7 @@ with tabs[2]:
             <div class="kpi-value" style="color: {PRIORITY_COLORS[bin_p]};">{selected_bin}</div>
             <div style="margin-top: 6px;">
                 <span class="badge badge-{'urgent' if bin_p=='URGENT' else ('soon' if bin_p=='SOON' else 'low')}">{bin_p}</span>
-                <span style="font-size: 0.85rem; color: #94a3b8; margin-left: 8px;">{bin_row['location_zone']}</span>
+                <span style="font-size: 0.85rem; color: #94a3b8; margin-left: 8px;">📍 {loc_name}</span>
             </div>
             <hr style="border-color: rgba(255,255,255,0.08); margin: 12px 0;">
             <div style="font-size: 0.85rem; line-height: 1.8; color: #cbd5e1;">
@@ -946,37 +1201,55 @@ with tabs[2]:
             apply_plot_style(fig_g2, height=210, margin=dict(t=40, b=10, l=30, r=30))
             st.plotly_chart(fig_g2, use_container_width=True)
 
-        # Historical Fill Level Time Series
-        bin_history = raw_df[raw_df["bin_id"] == selected_bin].sort_values("timestamp")
-        fig_ts = px.line(
-            bin_history,
-            x="timestamp",
-            y="fill_level",
-            markers=True,
-            title=f"Telemetry History & Periodic Empties — {selected_bin}"
+        # Historical Fill Level Time Series (with fallback for single-reading CSVs)
+        has_history = (
+            "timestamp" in raw_df.columns
+            and "fill_level" in raw_df.columns
+            and len(raw_df[raw_df["bin_id"] == selected_bin]) > 1
         )
-        fig_ts.update_traces(line_color="#38bdf8", marker=dict(size=4, color="#38bdf8"))
-        
-        # Highlight overflow points
-        overflow_events = bin_history[bin_history["overflow"] == 1]
-        if not overflow_events.empty:
-            fig_ts.add_scatter(
-                x=overflow_events["timestamp"],
-                y=overflow_events["fill_level"],
-                mode="markers",
-                marker=dict(color="#ef4444", size=10, symbol="x", line=dict(width=2, color="#ef4444")),
-                name="Overflow Incident"
+        if has_history:
+            bin_history = raw_df[raw_df["bin_id"] == selected_bin].sort_values("timestamp")
+            fig_ts = px.line(
+                bin_history,
+                x="timestamp",
+                y="fill_level",
+                markers=True,
+                title=f"Telemetry History & Periodic Empties — {selected_bin} ({loc_name})"
             )
+            fig_ts.update_traces(line_color="#38bdf8", marker=dict(size=4, color="#38bdf8"))
+            
+            if "overflow" in bin_history.columns:
+                overflow_events = bin_history[bin_history["overflow"] == 1]
+                if not overflow_events.empty:
+                    fig_ts.add_scatter(
+                        x=overflow_events["timestamp"],
+                        y=overflow_events["fill_level"],
+                        mode="markers",
+                        marker=dict(color="#ef4444", size=10, symbol="x", line=dict(width=2, color="#ef4444")),
+                        name="Overflow Incident"
+                    )
 
-        fig_ts.add_hline(y=90, line_dash="dash", line_color="#ef4444", annotation_text="Urgent Fill Threshold (90%)")
-        apply_plot_style(
-            fig_ts,
-            height=320,
-            xaxis_title="Reading Timestamp",
-            yaxis_title="Fill Level (%)",
-            yaxis=dict(range=[0, 105], gridcolor="rgba(255,255,255,0.06)")
-        )
-        st.plotly_chart(fig_ts, use_container_width=True)
+            fig_ts.add_hline(y=90, line_dash="dash", line_color="#ef4444", annotation_text="Urgent Fill Threshold (90%)")
+            apply_plot_style(
+                fig_ts,
+                height=320,
+                xaxis_title="Reading Timestamp",
+                yaxis_title="Fill Level (%)",
+                yaxis=dict(range=[0, 105], gridcolor="rgba(255,255,255,0.06)")
+            )
+            st.plotly_chart(fig_ts, use_container_width=True)
+        else:
+            st.markdown(f"""
+            <div style="background: rgba(30, 41, 59, 0.45); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px; padding: 22px; margin-top: 10px;">
+                <h5 style="color: #38bdf8; margin-bottom: 8px;">📡 Active Telemetry Snapshot — {selected_bin}</h5>
+                <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.6;">
+                    This bin is monitored at <b>{loc_name}</b>.<br>
+                    Current fill is <b>{bin_row['current_fill_level']:.1f}%</b>. 
+                    AI regressor forecasts fill reaching <b style="color: #38bdf8;">{bin_row['predicted_next_fill']:.1f}%</b> in the next observation window, 
+                    with an overflow probability of <b style="color: {'#ef4444' if bin_row['predicted_overflow_risk'] >= 0.7 else '#10b981'};">{bin_row['predicted_overflow_risk']*100:.1f}%</b>.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
 # =============================================================================
 # TAB 4: WHAT-IF AI SIMULATION
@@ -1127,7 +1400,8 @@ with tabs[4]:
         feature_importances = pd.Series(_reg.feature_importances_, index=feature_cols).sort_values(ascending=True)
         return reg_metrics, clf_metrics, feature_importances
 
-    reg_eval, clf_eval, feat_imp = evaluate_test_split(df_feat, reg_model, clf_model)
+    _, benchmark_df_feat = load_dataset()
+    reg_eval, clf_eval, feat_imp = evaluate_test_split(benchmark_df_feat, reg_model, clf_model)
 
     # Metrics Summary Row
     m1, m2, m3, m4 = st.columns(4)
@@ -1288,72 +1562,66 @@ df["target_next_overflow"] = df.groupby("bin_id")["overflow"].shift(-1)
 # =============================================================================
 with tabs[6]:
     st.markdown("### 📤 Custom CSV Batch Prediction & Intelligence")
-    st.caption("Upload your own sensor dataset. The dual ML models will forecast next-period fill level and overflow risk, generating a prioritized dispatch manifest.")
+    st.caption("Upload your own sensor dataset. The dual ML models will forecast next-period fill level and overflow risk, immediately refreshing the whole dashboard (Top KPIs, Mathura Map, Queue, and Inspector).")
 
     top_col1, top_col2 = st.columns([2, 1.2])
     with top_col1:
-        uploaded_csv = st.file_uploader(
-            "Choose a CSV file to evaluate:",
+        tab7_uploaded_csv = st.file_uploader(
+            "Upload Fleet Telemetry CSV (Refreshes ENTIRE Dashboard):",
             type=["csv"],
+            key="tab7_csv_uploader",
             help="Upload a CSV with bin telemetry or sensor features."
         )
+        if tab7_uploaded_csv is not None:
+            if tab7_uploaded_csv.getvalue() != st.session_state.get("uploaded_dataset_bytes"):
+                st.session_state.uploaded_dataset_bytes = tab7_uploaded_csv.getvalue()
+                st.session_state.uploaded_dataset_filename = tab7_uploaded_csv.name
+                st.session_state.collected_bins = set()
+                st.rerun()
+
     with top_col2:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
         try:
             with open("sample_waste_telemetry_template.csv", "rb") as f:
                 template_bytes = f.read()
             st.download_button(
-                label="⬇️ Download Sample CSV Template",
+                label="⬇️ Download Mathura Sample CSV",
                 data=template_bytes,
                 file_name="sample_waste_telemetry_template.csv",
                 mime="text/csv",
                 use_container_width=True
             )
-            st.caption("Pre-formatted template with 10 sample bins ready to edit.")
+            st.caption("Pre-formatted template with 10 sample bins in Mathura locations.")
         except Exception:
             pass
 
-    if uploaded_csv is not None:
+    if is_custom_data:
+        st.success(f"✅ **Active Dataset**: **{st.session_state.get('uploaded_dataset_filename', 'Custom CSV')}** ({len(priority_df)} records loaded) — Entire dashboard is reflecting this data!")
+        
+        btn_c1, btn_c2 = st.columns([1.6, 2.4])
+        with btn_c1:
+            if st.button("🔄 Revert to Default Mathura Fleet", key="tab7_revert_btn", use_container_width=True):
+                st.session_state.uploaded_dataset_bytes = None
+                st.session_state.uploaded_dataset_filename = None
+                st.session_state.collected_bins = set()
+                st.rerun()
+        with btn_c2:
+            st.caption("Click to reset all top KPIs and map back to the baseline 100-bin Mathura fleet.")
+        
+        st.markdown("---")
         try:
-            raw_upload_df = pd.read_csv(uploaded_csv)
-            st.success(f"✅ Successfully loaded **{uploaded_csv.name}** ({len(raw_upload_df)} records, {len(raw_upload_df.columns)} columns)")
-            
-            # Prepare features & run inference
-            processed_df, X_features = prepare_features_for_inference(raw_upload_df)
-            
-            pred_next_fill = reg_model.predict(X_features)
-            pred_overflow_risk = clf_model.predict_proba(X_features)[:, 1]
-            
-            results_df = raw_upload_df.copy()
-            results_df["predicted_next_fill"] = np.round(pred_next_fill, 1)
-            results_df["predicted_overflow_risk"] = np.round(pred_overflow_risk, 3)
-            results_df["predicted_overflow_risk_pct"] = (results_df["predicted_overflow_risk"] * 100).round(1)
-            results_df["priority"] = results_df.apply(
-                lambda r: calculate_priority(
-                    r["predicted_next_fill"], r["predicted_overflow_risk"],
-                    st.session_state.custom_urgent_fill,
-                    st.session_state.custom_urgent_risk,
-                    st.session_state.custom_soon_fill,
-                    st.session_state.custom_soon_risk
-                ), axis=1
-            )
-            
-            # Sort urgent first
-            p_order = {"URGENT": 0, "SOON": 1, "LOW": 2}
-            results_df["sort_rank"] = results_df["priority"].map(p_order)
-            results_df = results_df.sort_values(by=["sort_rank", "predicted_overflow_risk"], ascending=[True, False]).drop(columns=["sort_rank"]).reset_index(drop=True)
+            results_df = priority_df.copy()
             
             # KPI metric cards for uploaded dataset
             u_urgent = (results_df["priority"] == "URGENT").sum()
             u_soon = (results_df["priority"] == "SOON").sum()
             u_low = (results_df["priority"] == "LOW").sum()
-            fill_col = "fill_level" if "fill_level" in results_df.columns else ("current_fill_level" if "current_fill_level" in results_df.columns else None)
-            u_avg_fill = results_df[fill_col].mean() if fill_col else results_df["predicted_next_fill"].mean()
+            u_avg_fill = results_df["current_fill_level"].mean()
             
             uc1, uc2, uc3, uc4 = st.columns(4)
             uc1.metric("🔴 Urgent Bins", u_urgent, f"{u_urgent/len(results_df)*100:.1f}% of batch")
-            uc2.metric("🟠 Soon Priority", u_soon)
-            uc3.metric("🟢 Low Priority", u_low)
+            uc2.metric("🟠 Soon Priority", u_soon, f"{u_soon/len(results_df)*100:.1f}% of batch")
+            uc3.metric("🟢 Low Priority", u_low, f"{u_low/len(results_df)*100:.1f}% of batch")
             uc4.metric("📈 Batch Avg Fill", f"{u_avg_fill:.1f}%")
             
             st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
@@ -1378,11 +1646,11 @@ with tabs[6]:
                 fig_up_scatter = px.scatter(
                     results_df,
                     x="predicted_next_fill",
-                    y="predicted_overflow_risk_pct",
+                    y=results_df["predicted_overflow_risk"] * 100,
                     color="priority",
                     color_discrete_map=PRIORITY_COLORS,
                     hover_name="bin_id" if "bin_id" in results_df.columns else None,
-                    labels={"predicted_next_fill": "Predicted Next Fill (%)", "predicted_overflow_risk_pct": "Overflow Risk (%)"}
+                    labels={"predicted_next_fill": "Predicted Next Fill (%)", "y": "Overflow Risk (%)"}
                 )
                 fig_up_scatter.add_vline(x=st.session_state.custom_urgent_fill, line_dash="dash", line_color="#ef4444")
                 fig_up_scatter.add_hline(y=st.session_state.custom_urgent_risk*100, line_dash="dash", line_color="#ef4444")
@@ -1401,8 +1669,19 @@ with tabs[6]:
                     return "color: #10b981; font-weight: bold; background-color: rgba(16, 185, 129, 0.15);"
                 return ""
             
-            display_pred_df = results_df.copy()
-            styled_upload_table = display_pred_df.style.map(color_p_cell, subset=["priority"] if "priority" in display_pred_df.columns else [])
+            display_pred_df = results_df[[
+                "bin_id", "mathura_place", "current_fill_level",
+                "predicted_next_fill", "predicted_overflow_risk", "priority", "hours_since_collection"
+            ]].rename(columns={
+                "bin_id": "Bin ID",
+                "mathura_place": "Mathura Location",
+                "current_fill_level": "Current Fill (%)",
+                "predicted_next_fill": "Predicted Next Fill (%)",
+                "predicted_overflow_risk": "Overflow Risk Probability",
+                "priority": "Assigned Urgency",
+                "hours_since_collection": "Hours Since Empty"
+            })
+            styled_upload_table = display_pred_df.style.map(color_p_cell, subset=["Assigned Urgency"])
             st.dataframe(styled_upload_table, use_container_width=True, height=360)
             
             # Export actions
@@ -1411,7 +1690,7 @@ with tabs[6]:
                 st.download_button(
                     label="⬇️ Download Predictions (CSV)",
                     data=results_df.to_csv(index=False).encode("utf-8"),
-                    file_name=f"predicted_{uploaded_csv.name}",
+                    file_name=f"predicted_{st.session_state.get('uploaded_dataset_filename', 'telemetry.csv')}",
                     mime="text/csv",
                     use_container_width=True
                 )
@@ -1419,15 +1698,14 @@ with tabs[6]:
                 st.download_button(
                     label="⬇️ Download Predictions (JSON)",
                     data=results_df.to_json(orient="records", indent=2),
-                    file_name=f"predicted_{uploaded_csv.name.replace('.csv', '.json')}",
+                    file_name=f"predicted_{str(st.session_state.get('uploaded_dataset_filename', 'telemetry')).replace('.csv', '.json')}",
                     mime="application/json",
                     use_container_width=True
                 )
         except Exception as e:
-            st.error(f"❌ Error processing uploaded CSV: {str(e)}")
-            st.info("💡 Please make sure the CSV has valid columns or download the sample template above.")
+            st.error(f"❌ Error displaying predictions: {str(e)}")
     else:
-        st.info("👆 Upload any CSV above to preview predictions, or download the template to test right away.")
+        st.info("👆 Upload any CSV above (or from the sidebar) to instantly refresh the entire dashboard with your custom data, or download the template above to test.")
 
 # -----------------------------------------------------------------------------
 # FOOTER
