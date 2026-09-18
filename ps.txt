@@ -1,0 +1,30 @@
+17. Smart Waste Collection Priority Predictor
+Difficulty	Easy-Intermediate
+Primary focus	Regression/classification + resource prioritization
+Bootcamp skills used	Pandas, NumPy, regression/classification, feature engineering, visualization
+Industry Context
+Fixed garbage-truck routes can waste fuel by visiting half-empty bins while other locations overflow. Fill level depends on location, day, previous collection, nearby activity, and recent trends.
+Hackathon Challenge
+Build a model that predicts bin fill level or overflow risk for the next collection window, then converts the prediction into a prioritized route list. Route optimization itself can be simple; the core is the predictive model and operational dashboard.
+What the system should do
+	Load historical fill-level data.
+	Create time/lag features.
+	Predict next-period fill percentage or overflow class.
+	Rank collection points by urgency.
+	Show predicted versus actual performance.	Suggested data / inputs
+	Synthetic sensor dataset: bin_id, timestamp, fill_level, location_zone, last_collection, day_type, optional weather/event flag.
+AI / ML / Engineering Components
+	Linear Regression baseline or Logistic Regression for overflow class.
+	Random Forest Regressor/Classifier comparison.
+	MAE/RMSE or F1 depending on target.
+	Priority rules and map/table view.
+Minimum viable deliverable
+	EDA.
+	Trained prediction model.
+	Priority collection list.
+	Performance chart.	Stretch goals
+	Simple nearest-neighbor route ordering.
+	Cost/fuel estimate.
+	Forecast multiple time steps.
+Scope / guardrail
+Use simulated data; do not claim real municipal route optimization without road-network constraints.

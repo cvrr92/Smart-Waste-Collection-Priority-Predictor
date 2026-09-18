@@ -1,0 +1,11 @@
+Recommended Build Stack
+Layer	Suggested Options
+Frontend	HTML + CSS + JavaScript, Streamlit, Gradio
+Backend	Python, Flask, FastAPI
+Data	Pandas, NumPy, CSV, SQLite
+ML	scikit-learn; optional RNN/LSTM where the problem is genuinely sequential
+Text / retrieval	TF-IDF, cosine similarity, embeddings, FAISS/Chroma when useful
+Generative layer	Any free API model or locally run open model; use only where it adds a clear product capability
+Visualization	Matplotlib, Plotly, browser charts
+Versioning / portfolio	GitHub repository, README, architecture diagram, setup instructions
+

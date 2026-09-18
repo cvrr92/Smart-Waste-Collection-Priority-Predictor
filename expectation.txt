@@ -1,0 +1,11 @@
+Pandas/NumPy, EDA, feature engineering, scikit-learn, model metrics, and a clean product interface. The remaining three problems in each track are more system-oriented and may combine ML, retrieval, sequence models, rules, or generative AI.
+Bootcamp Concepts Expected Across Projects
+	Python fundamentals: functions, reusable code, parameters/return values, basic error handling, comments, naming, and clean program structure.
+	NumPy: arrays, indexing/filtering, numerical operations, summary statistics, and efficient calculations.
+	Pandas and CSV handling: loading data, cleaning, missing values, filtering, groupby, joins, feature creation, and exploratory analysis.
+	Visualization: meaningful plots that explain patterns, errors, model performance, and business impact.
+	scikit-learn workflow: train/test split, preprocessing, baseline model, classification or regression, and appropriate evaluation metrics.
+	Sequence learning where justified: RNN/LSTM for time-ordered or sequential data, with a simpler baseline for comparison.
+	Attention / transformer concepts where relevant: embeddings, semantic similarity, text representations, and grounded document search.
+	Product engineering: connect the intelligence layer to a usable interface and handle invalid inputs or API/model failures gracefully.
+

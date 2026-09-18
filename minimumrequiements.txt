@@ -1,0 +1,9 @@
+Common Minimum Submission
+	A clearly defined end user and real workflow.
+	A working application or dashboard, not only a notebook.
+	A meaningful dataset, document set, or test suite.
+	At least one baseline or comparison so the chosen approach is justified.
+	Visible validation: ML metrics, test cases, retrieval accuracy, schema validation, or rule checks depending on the project.
+	A short README explaining architecture, dataset, model choice, limitations, and setup.
+	Where an external generative model is used: structured output, basic error handling, and at least a small evaluation set.
+
