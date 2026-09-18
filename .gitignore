@@ -1,0 +1,26 @@
+# Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# OS Specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Streamlit Local Runtime
+.streamlit/secrets.toml
+
+# Generated Plots & EDA Graphics
+Plots/
+plots/
+
+# Data files & generated outputs
+*.csv
